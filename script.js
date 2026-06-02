@@ -34,8 +34,9 @@ const PIECE_COLORS = [
 ];
 
 const TRAY_PIECE_SCALE = 0.55;
-/** Alttaki 3 tepsi parçası: hücre dışına görünmez dokunma payı (mobil) */
-const TRAY_TOUCH_PAD_RATIO = 0.2;
+/** Tepsi blokları: seçim toleransı (canvas px, özellikle alt/kenar) */
+const TRAY_HIT_PAD_PX = 35;
+const TRAY_HIT_PAD_BOTTOM_PX = 40;
 /** Fat finger: parça parmak/imlecin üstünde asılı kalır (canvas px) */
 const DRAG_LIFT_MIN_PX = 80;
 const DRAG_LIFT_CELL_MULT = 1.25;
@@ -150,7 +151,7 @@ let deviceRatio = 1;
 let grid = createEmptyGrid();
 let trayPieces = [null, null, null];
 let drag = null;
-let touchDragListenersBound = false;
+let dragViewRect = null;
 let floatingTexts = [];
 let clearParticles = [];
 let lineClearEffect = null;
@@ -1076,7 +1077,7 @@ function getTrayPieceLayout(slotIndex, matrix) {
 }
 
 function getCanvasPoint(clientX, clientY) {
-  const rect = canvas.getBoundingClientRect();
+  const rect = dragViewRect || canvas.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) {
     return { x: 0, y: 0 };
   }
@@ -1088,8 +1089,11 @@ function getCanvasPoint(clientX, clientY) {
   };
 }
 
-function hitTestFilledCells(px, py, originX, originY, cellSize, matrix, touchPadRatio = 0) {
-  const pad = cellSize * touchPadRatio;
+function hitTestFilledCells(px, py, originX, originY, cellSize, matrix, hitPad = null) {
+  const padX = hitPad ? hitPad.x : 0;
+  const padTop = hitPad ? hitPad.top : 0;
+  const padRight = hitPad ? hitPad.right : 0;
+  const padBottom = hitPad ? hitPad.bottom : 0;
 
   for (let row = 0; row < matrix.length; row++) {
     for (let col = 0; col < matrix[row].length; col++) {
@@ -1099,10 +1103,10 @@ function hitTestFilledCells(px, py, originX, originY, cellSize, matrix, touchPad
       const cellY = originY + row * cellSize;
 
       if (
-        px >= cellX - pad &&
-        px < cellX + cellSize + pad &&
-        py >= cellY - pad &&
-        py < cellY + cellSize + pad
+        px >= cellX - padX &&
+        px < cellX + cellSize + padRight &&
+        py >= cellY - padTop &&
+        py < cellY + cellSize + padBottom
       ) {
         const relCol = (px - originX) / cellSize;
         const relRow = (py - originY) / cellSize;
@@ -1113,6 +1117,13 @@ function hitTestFilledCells(px, py, originX, originY, cellSize, matrix, touchPad
   return null;
 }
 
+const TRAY_HIT_PAD = {
+  x: TRAY_HIT_PAD_PX,
+  top: TRAY_HIT_PAD_PX,
+  right: TRAY_HIT_PAD_PX,
+  bottom: TRAY_HIT_PAD_BOTTOM_PX,
+};
+
 function hitTestTrayPiece(px, py) {
   if (isGameOver) return null;
 
@@ -1122,14 +1133,30 @@ function hitTestTrayPiece(px, py) {
     if (drag && drag.slotIndex === i) continue;
 
     const pieceLayout = getTrayPieceLayout(i, piece.matrix);
+    const matrix = piece.matrix;
+    const cellSize = pieceLayout.cellSize;
+    const cols = matrix[0].length;
+    const rows = matrix.length;
+    const pieceW = cols * cellSize;
+    const pieceH = rows * cellSize;
+
+    const boxX = pieceLayout.x - TRAY_HIT_PAD.x;
+    const boxY = pieceLayout.y - TRAY_HIT_PAD.top;
+    const boxW = pieceW + TRAY_HIT_PAD.x + TRAY_HIT_PAD.right;
+    const boxH = pieceH + TRAY_HIT_PAD.top + TRAY_HIT_PAD.bottom;
+
+    if (px < boxX || px >= boxX + boxW || py < boxY || py >= boxY + boxH) {
+      continue;
+    }
+
     const hit = hitTestFilledCells(
       px,
       py,
       pieceLayout.x,
       pieceLayout.y,
-      pieceLayout.cellSize,
-      piece.matrix,
-      TRAY_TOUCH_PAD_RATIO
+      cellSize,
+      matrix,
+      TRAY_HIT_PAD
     );
 
     if (hit) {
@@ -1360,40 +1387,8 @@ function tryPlaceDraggedPiece(px, py) {
   return true;
 }
 
-function bindTouchDragListeners() {
-  if (touchDragListenersBound) return;
-  touchDragListenersBound = true;
-
-  window.addEventListener("touchmove", onWindowTouchMove, { passive: false });
-  window.addEventListener("touchend", onWindowTouchEnd, { passive: false });
-  window.addEventListener("touchcancel", onWindowTouchEnd, { passive: false });
-}
-
-function unbindTouchDragListeners() {
-  if (!touchDragListenersBound) return;
-  touchDragListenersBound = false;
-
-  window.removeEventListener("touchmove", onWindowTouchMove);
-  window.removeEventListener("touchend", onWindowTouchEnd);
-  window.removeEventListener("touchcancel", onWindowTouchEnd);
-}
-
-function onWindowTouchMove(e) {
-  if (!drag) return;
-  e.preventDefault();
-  if (e.touches.length === 0) return;
-  const t = e.touches[0];
-  onPointerMove(t.clientX, t.clientY);
-}
-
-function onWindowTouchEnd(e) {
-  e.preventDefault();
-  const t = e.changedTouches[0];
-  if (t && drag) onPointerUp(t.clientX, t.clientY);
-  unbindTouchDragListeners();
-}
-
 function startDrag(px, py, hit, isTouch = false) {
+  dragViewRect = canvas.getBoundingClientRect();
   const boardCell = layout.cellSize;
   const matrix = hit.piece.matrix;
   const trayLayout = getTrayPieceLayout(hit.slotIndex, matrix);
@@ -1417,8 +1412,6 @@ function startDrag(px, py, hit, isTouch = false) {
     pointerX: px,
     pointerY: py,
   };
-
-  if (isTouch) bindTouchDragListeners();
 }
 
 function updateDrag(px, py) {
@@ -1430,9 +1423,9 @@ function updateDrag(px, py) {
 
 function endDrag(px, py) {
   if (!drag) return;
-  unbindTouchDragListeners();
   tryPlaceDraggedPiece(px, py);
   drag = null;
+  dragViewRect = null;
   draw();
 }
 
@@ -1475,6 +1468,7 @@ function resizeCanvas() {
 
   ctx.setTransform(deviceRatio, 0, 0, deviceRatio, 0, 0);
   layout = getLayoutMetrics(cssWidth, cssHeight);
+  if (drag) dragViewRect = canvas.getBoundingClientRect();
   draw();
 }
 
@@ -1568,65 +1562,41 @@ function initScores() {
   currentScoreEl.textContent = "0";
 }
 
+function onCanvasPointerDown(e) {
+  if (e.button !== 0 && e.pointerType === "mouse") return;
+  e.preventDefault();
+  try {
+    canvas.setPointerCapture(e.pointerId);
+  } catch (_) {
+    /* capture desteklenmiyorsa devam */
+  }
+  onPointerDown(e.clientX, e.clientY, e.pointerType === "touch");
+}
+
+function onCanvasPointerMove(e) {
+  e.preventDefault();
+  onPointerMove(e.clientX, e.clientY);
+}
+
+function onCanvasPointerUp(e) {
+  e.preventDefault();
+  if (canvas.hasPointerCapture(e.pointerId)) {
+    try {
+      canvas.releasePointerCapture(e.pointerId);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  onPointerUp(e.clientX, e.clientY);
+}
+
 function setupInput() {
   canvas.style.touchAction = "none";
 
-  canvas.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    onPointerDown(e.clientX, e.clientY);
-  });
-
-  window.addEventListener("mousemove", (e) => {
-    onPointerMove(e.clientX, e.clientY);
-  });
-
-  window.addEventListener("mouseup", (e) => {
-    onPointerUp(e.clientX, e.clientY);
-  });
-
-  canvas.addEventListener(
-    "touchstart",
-    (e) => {
-      e.preventDefault();
-      if (e.touches.length === 0) return;
-      const t = e.touches[0];
-      onPointerDown(t.clientX, t.clientY, true);
-    },
-    { passive: false }
-  );
-
-  canvas.addEventListener(
-    "touchmove",
-    (e) => {
-      e.preventDefault();
-      if (!drag) return;
-      if (e.touches.length === 0) return;
-      const t = e.touches[0];
-      onPointerMove(t.clientX, t.clientY);
-    },
-    { passive: false }
-  );
-
-  canvas.addEventListener(
-    "touchend",
-    (e) => {
-      e.preventDefault();
-      const t = e.changedTouches[0];
-      if (t) onPointerUp(t.clientX, t.clientY);
-    },
-    { passive: false }
-  );
-
-  canvas.addEventListener(
-    "touchcancel",
-    (e) => {
-      e.preventDefault();
-      const t = e.changedTouches[0];
-      if (t) onPointerUp(t.clientX, t.clientY);
-      unbindTouchDragListeners();
-    },
-    { passive: false }
-  );
+  canvas.addEventListener("pointerdown", onCanvasPointerDown, { passive: false });
+  canvas.addEventListener("pointermove", onCanvasPointerMove, { passive: false });
+  canvas.addEventListener("pointerup", onCanvasPointerUp, { passive: false });
+  canvas.addEventListener("pointercancel", onCanvasPointerUp, { passive: false });
 
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
