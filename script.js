@@ -36,10 +36,9 @@ const PIECE_COLORS = [
 const TRAY_PIECE_SCALE = 0.55;
 /** Alttaki 3 tepsi parçası: hücre dışına görünmez dokunma payı (mobil) */
 const TRAY_TOUCH_PAD_RATIO = 0.2;
-/** Dokunmatikte parça parmağın üstünden kalkar (blok görünür kalır) */
-const DRAG_TOUCH_LIFT_RATIO = 1.35;
-/** Dokunmatik sürükleme yumuşatma (yüksek = daha hızlı takip) */
-const DRAG_TOUCH_SMOOTHING = 0.9;
+/** Fat finger: parça parmak/imlecin üstünde asılı kalır (canvas px) */
+const DRAG_LIFT_MIN_PX = 80;
+const DRAG_LIFT_CELL_MULT = 1.25;
 
 /** Canvas içi dikey bölüm oranları (referans: ~55% tahta, ~20% tepsi) */
 const LAYOUT_TRAY_RATIO = 0.15;
@@ -768,8 +767,7 @@ function needsAnimationLoop() {
     floatingTexts.length > 0 ||
     clearParticles.length > 0 ||
     lineClearEffect !== null ||
-    comboVisual !== null ||
-    (drag !== null && drag.useSmoothing)
+    comboVisual !== null
   );
 }
 
@@ -1308,7 +1306,16 @@ function clamp01(value) {
   return Math.max(0, Math.min(1, value));
 }
 
-function getDragDesiredOrigin(px, py) {
+/** Dokunmatik / coarse pointer: en az 80px veya ~1.25 hücre yukarı */
+function getDragLiftY(cellSize, useLift) {
+  if (!useLift) return 0;
+  return Math.max(DRAG_LIFT_MIN_PX, cellSize * DRAG_LIFT_CELL_MULT);
+}
+
+/**
+ * Bloğun ekrandaki gerçek (offsetli) sol-üst köşesi — çizim ve snap buradan.
+ */
+function getDragVisualOrigin(px, py) {
   const cellSize = layout.cellSize;
   const matrix = drag.piece.matrix;
   const cols = matrix[0].length;
@@ -1322,25 +1329,10 @@ function getDragDesiredOrigin(px, py) {
   };
 }
 
-/**
- * Tutma noktası parça içinde normalize (0–1); tepsi/tahta ölçeği farkında sıçrama olmaz.
- */
-function getDragOriginFromPointer(px, py) {
-  const desired = getDragDesiredOrigin(px, py);
-
-  if (!drag.useSmoothing) {
-    return desired;
-  }
-
-  drag.smoothX += (desired.x - drag.smoothX) * DRAG_TOUCH_SMOOTHING;
-  drag.smoothY += (desired.y - drag.smoothY) * DRAG_TOUCH_SMOOTHING;
-  return { x: drag.smoothX, y: drag.smoothY };
-}
-
 function tryPlaceDraggedPiece(px, py) {
   const { board, cellSize } = layout;
   const { matrix, color } = drag.piece;
-  const origin = getDragDesiredOrigin(px, py);
+  const origin = getDragVisualOrigin(px, py);
 
   const gridCol = Math.round((origin.x - board.x) / cellSize);
   const gridRow = Math.round((origin.y - board.y) / cellSize);
@@ -1395,12 +1387,13 @@ function onWindowTouchMove(e) {
 }
 
 function onWindowTouchEnd(e) {
+  e.preventDefault();
   const t = e.changedTouches[0];
   if (t && drag) onPointerUp(t.clientX, t.clientY);
   unbindTouchDragListeners();
 }
 
-function startDrag(px, py, hit) {
+function startDrag(px, py, hit, isTouch = false) {
   const boardCell = layout.cellSize;
   const matrix = hit.piece.matrix;
   const trayLayout = getTrayPieceLayout(hit.slotIndex, matrix);
@@ -1409,15 +1402,11 @@ function startDrag(px, py, hit) {
   const pieceWTray = cols * trayLayout.cellSize;
   const pieceHTray = rows * trayLayout.cellSize;
   const pieceWBoard = cols * boardCell;
-  const pieceHBoard = rows * boardCell;
 
   const normX = clamp01((px - trayLayout.x) / pieceWTray);
   const normY = clamp01((py - trayLayout.y) / pieceHTray);
-  const useSmoothing = isCoarsePointer();
-  const liftY = useSmoothing ? boardCell * DRAG_TOUCH_LIFT_RATIO : 0;
-
-  const originX = px - normX * pieceWBoard;
-  const originY = py - normY * pieceHBoard - liftY;
+  const useLift = isTouch || isCoarsePointer();
+  const liftY = getDragLiftY(boardCell, useLift);
 
   drag = {
     piece: hit.piece,
@@ -1425,24 +1414,17 @@ function startDrag(px, py, hit) {
     normX,
     normY,
     liftY,
-    useSmoothing,
     pointerX: px,
     pointerY: py,
-    smoothX: originX,
-    smoothY: originY,
   };
 
-  if (useSmoothing) {
-    bindTouchDragListeners();
-    ensureAnimationLoop();
-  }
+  if (isTouch) bindTouchDragListeners();
 }
 
 function updateDrag(px, py) {
   if (!drag) return;
   drag.pointerX = px;
   drag.pointerY = py;
-  getDragOriginFromPointer(px, py);
   draw();
 }
 
@@ -1454,14 +1436,14 @@ function endDrag(px, py) {
   draw();
 }
 
-function onPointerDown(clientX, clientY) {
+function onPointerDown(clientX, clientY, isTouch = false) {
   if (!layout || drag || isGameOver) return;
 
   const { x, y } = getCanvasPoint(clientX, clientY);
   const hit = hitTestTrayPiece(x, y);
   if (!hit) return;
 
-  startDrag(x, y, hit);
+  startDrag(x, y, hit, isTouch);
   draw();
 }
 
@@ -1541,7 +1523,7 @@ function drawTrayPieces() {
 function drawDraggedPiece() {
   if (!drag) return;
 
-  const origin = getDragOriginFromPointer(drag.pointerX, drag.pointerY);
+  const origin = getDragVisualOrigin(drag.pointerX, drag.pointerY);
   drawPiece(
     drag.piece.matrix,
     origin.x,
@@ -1587,6 +1569,8 @@ function initScores() {
 }
 
 function setupInput() {
+  canvas.style.touchAction = "none";
+
   canvas.addEventListener("mousedown", (e) => {
     e.preventDefault();
     onPointerDown(e.clientX, e.clientY);
@@ -1606,7 +1590,7 @@ function setupInput() {
       e.preventDefault();
       if (e.touches.length === 0) return;
       const t = e.touches[0];
-      onPointerDown(t.clientX, t.clientY);
+      onPointerDown(t.clientX, t.clientY, true);
     },
     { passive: false }
   );
@@ -1614,8 +1598,8 @@ function setupInput() {
   canvas.addEventListener(
     "touchmove",
     (e) => {
-      if (!drag) return;
       e.preventDefault();
+      if (!drag) return;
       if (e.touches.length === 0) return;
       const t = e.touches[0];
       onPointerMove(t.clientX, t.clientY);
@@ -1633,11 +1617,16 @@ function setupInput() {
     { passive: false }
   );
 
-  canvas.addEventListener("touchcancel", (e) => {
-    const t = e.changedTouches[0];
-    if (t) onPointerUp(t.clientX, t.clientY);
-    unbindTouchDragListeners();
-  });
+  canvas.addEventListener(
+    "touchcancel",
+    (e) => {
+      e.preventDefault();
+      const t = e.changedTouches[0];
+      if (t) onPointerUp(t.clientX, t.clientY);
+      unbindTouchDragListeners();
+    },
+    { passive: false }
+  );
 
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
