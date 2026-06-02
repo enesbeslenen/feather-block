@@ -11,9 +11,12 @@ const YOUTUBE_PLAYLIST_ID = "PLNMMzpFq8an6Y3CYTzLkgMMpBaV6kp5yy";
 const GRID_SIZE = 8;
 const TRAY_SLOT_COUNT = 3;
 const HIGH_SCORE_KEY = "featherBlockHighScore";
-const FLOAT_TEXT_DURATION_MS = 1000;
-const CLEAR_ANIM_MS = 380;
-const COMBO_VISUAL_MS = 900;
+const FLOAT_TEXT_DURATION_MS = 520;
+const CLEAR_ANIM_MS = 240;
+const COMBO_VISUAL_MS = 480;
+const PICKUP_SCALE_MS = 100;
+const PICKUP_SCALE_BOOST = 1.1;
+const DRAG_RETURN_MS = 160;
 
 /** Block Blast tarzı puanlama */
 const SCORE_PER_CELL = 10;
@@ -157,7 +160,8 @@ let floatingTexts = [];
 let clearParticles = [];
 let lineClearEffect = null;
 let comboVisual = null;
-let animLoopActive = false;
+let dragReturnAnim = null;
+let gameLoopId = 0;
 
 let currentScore = 0;
 let highScore = 0;
@@ -704,7 +708,7 @@ function spawnClearParticles(cells) {
         vy: Math.sin(angle) * speed - 1.2,
         color: cell.color,
         life: 1,
-        decay: 0.018 + Math.random() * 0.022,
+        decay: 0.04 + Math.random() * 0.035,
         size: Math.max(2, layout.cellSize * (0.06 + Math.random() * 0.08)),
       });
     }
@@ -725,25 +729,23 @@ function startComboVisual(streak) {
   };
 }
 
+function easeOutCubic(t) {
+  const x = Math.min(1, Math.max(0, t));
+  return 1 - (1 - x) ** 3;
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
 function updateClearParticles() {
   for (const p of clearParticles) {
     p.x += p.vx;
     p.y += p.vy;
-    p.vy += 0.12;
+    p.vy += 0.22;
     p.life -= p.decay;
   }
   clearParticles = clearParticles.filter((p) => p.life > 0);
-}
-
-function updateLineClearEffect() {
-  if (!lineClearEffect) return false;
-
-  const elapsed = performance.now() - lineClearEffect.start;
-  if (elapsed >= lineClearEffect.duration) {
-    lineClearEffect = null;
-    return true;
-  }
-  return false;
 }
 
 /** 1→100, 2→300, 3→600, 4→1000 … (n*(n+1)/2 * 100) */
@@ -780,38 +782,32 @@ function scoreLineClear(lineCount, dropX, dropY) {
   }
 }
 
-function needsAnimationLoop() {
-  return (
-    floatingTexts.length > 0 ||
-    clearParticles.length > 0 ||
-    lineClearEffect !== null ||
-    comboVisual !== null
-  );
-}
+function tickGame(now) {
+  updateClearParticles();
 
-function ensureAnimationLoop() {
-  if (animLoopActive) return;
-  animLoopActive = true;
-
-  function tick() {
-    updateClearParticles();
-    updateLineClearEffect();
-
-    if (comboVisual) {
-      const elapsed = performance.now() - comboVisual.start;
-      if (elapsed >= comboVisual.duration) comboVisual = null;
-    }
-
-    draw();
-
-    if (needsAnimationLoop()) {
-      requestAnimationFrame(tick);
-    } else {
-      animLoopActive = false;
-    }
+  if (lineClearEffect && now - lineClearEffect.start >= lineClearEffect.duration) {
+    lineClearEffect = null;
   }
 
-  requestAnimationFrame(tick);
+  if (comboVisual && now - comboVisual.start >= comboVisual.duration) {
+    comboVisual = null;
+  }
+
+  updateDragReturn(now);
+}
+
+function startGameLoop() {
+  if (gameLoopId) return;
+
+  function loop(now) {
+    tickGame(now);
+    if (layout && viewWidth > 0 && viewHeight > 0) {
+      draw();
+    }
+    gameLoopId = requestAnimationFrame(loop);
+  }
+
+  gameLoopId = requestAnimationFrame(loop);
 }
 
 function getPlacementCenterCanvas(gridRow, gridCol, matrix) {
@@ -832,11 +828,6 @@ function spawnFloatingText(x, y, text, color) {
     color,
     start: performance.now(),
   });
-  startFloatAnimationLoop();
-}
-
-function startFloatAnimationLoop() {
-  ensureAnimationLoop();
 }
 
 function drawFloatingTexts() {
@@ -851,8 +842,8 @@ function drawFloatingTexts() {
   for (const ft of floatingTexts) {
     const elapsed = now - ft.start;
     const t = elapsed / FLOAT_TEXT_DURATION_MS;
-    const alpha = 1 - t;
-    const floatUp = layout.cellSize * 1.2 * t;
+    const alpha = 1 - easeOutCubic(t);
+    const floatUp = layout.cellSize * 2.4 * easeOutCubic(t);
 
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -893,7 +884,6 @@ function resolveLineClearsAndScore(dropX, dropY) {
     dropY,
   };
 
-  ensureAnimationLoop();
 }
 
 function addScore(points) {
@@ -989,6 +979,7 @@ function restartGame() {
   clearParticles = [];
   lineClearEffect = null;
   comboVisual = null;
+  dragReturnAnim = null;
   drag = null;
   updateScoreUI();
   spawnTraySet();
@@ -1151,6 +1142,7 @@ function hitTestTrayPiece(px, py) {
     const piece = trayPieces[i];
     if (!piece) continue;
     if (drag && drag.slotIndex === i) continue;
+    if (dragReturnAnim && dragReturnAnim.slotIndex === i) continue;
 
     const pieceLayout = getTrayPieceLayout(i, piece.matrix);
     const matrix = piece.matrix;
@@ -1217,6 +1209,26 @@ function drawPiece(matrix, originX, originY, cellSize, color, alpha = 1) {
   ctx.globalAlpha = 1;
 }
 
+function drawPieceScaled(matrix, originX, originY, cellSize, color, scale, alpha = 1) {
+  const cols = matrix[0].length;
+  const rows = matrix.length;
+  const cx = originX + (cols * cellSize) / 2;
+  const cy = originY + (rows * cellSize) / 2;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(scale, scale);
+  ctx.translate(-cx, -cy);
+  drawPiece(matrix, originX, originY, cellSize, color, alpha);
+  ctx.restore();
+}
+
+function getDragPickupScale(now) {
+  if (!drag) return 1;
+  const t = Math.min(1, (now - drag.pickupStart) / PICKUP_SCALE_MS);
+  return lerp(1, PICKUP_SCALE_BOOST, easeOutCubic(t));
+}
+
 function drawPlacedBlocks() {
   const { x, y } = layout.board;
   const cellSize = layout.cellSize;
@@ -1248,9 +1260,8 @@ function drawLineClearAnimation() {
 
   const { x, y } = layout.board;
   const cellSize = layout.cellSize;
-  const clearT = Math.min(
-    1,
-    (performance.now() - lineClearEffect.start) / lineClearEffect.duration
+  const clearT = easeOutCubic(
+    Math.min(1, (performance.now() - lineClearEffect.start) / lineClearEffect.duration)
   );
 
   for (const cell of lineClearEffect.ghostCells) {
@@ -1394,6 +1405,8 @@ function getDragVisualOrigin(px, py) {
 }
 
 function tryPlaceDraggedPiece(px, py) {
+  if (!drag) return false;
+
   const { board, cellSize } = layout;
   const { matrix, color } = drag.piece;
   const origin = getDragVisualOrigin(px, py);
@@ -1448,6 +1461,7 @@ function startDrag(px, py, hit, isTouch = false) {
     liftY,
     pointerX: px,
     pointerY: py,
+    pickupStart: performance.now(),
   };
 }
 
@@ -1455,15 +1469,49 @@ function updateDrag(px, py) {
   if (!drag) return;
   drag.pointerX = px;
   drag.pointerY = py;
-  draw();
+}
+
+function startDragReturn(px, py) {
+  const d = drag;
+  const trayLayout = getTrayPieceLayout(d.slotIndex, d.piece.matrix);
+  const origin = getDragVisualOrigin(px, py);
+
+  dragReturnAnim = {
+    slotIndex: d.slotIndex,
+    piece: d.piece,
+    matrix: d.piece.matrix,
+    color: d.piece.color,
+    fromX: origin.x,
+    fromY: origin.y,
+    fromCell: layout.cellSize,
+    toX: trayLayout.x,
+    toY: trayLayout.y,
+    toCell: trayLayout.cellSize,
+    start: performance.now(),
+    duration: DRAG_RETURN_MS,
+  };
+
+  drag = null;
+  dragViewRect = null;
+}
+
+function updateDragReturn(now) {
+  if (!dragReturnAnim) return;
+  if (now - dragReturnAnim.start >= dragReturnAnim.duration) {
+    dragReturnAnim = null;
+  }
 }
 
 function endDrag(px, py) {
   if (!drag) return;
-  tryPlaceDraggedPiece(px, py);
-  drag = null;
-  dragViewRect = null;
-  draw();
+
+  if (tryPlaceDraggedPiece(px, py)) {
+    drag = null;
+    dragViewRect = null;
+    return;
+  }
+
+  startDragReturn(px, py);
 }
 
 function onPointerDown(clientX, clientY, isTouch = false) {
@@ -1474,7 +1522,6 @@ function onPointerDown(clientX, clientY, isTouch = false) {
   if (!hit) return;
 
   startDrag(x, y, hit, isTouch);
-  draw();
 }
 
 function onPointerMove(clientX, clientY) {
@@ -1545,23 +1592,41 @@ function drawTrayPieces() {
     const piece = trayPieces[i];
     if (!piece) continue;
     if (drag && drag.slotIndex === i) continue;
+    if (dragReturnAnim && dragReturnAnim.slotIndex === i) continue;
 
     const pieceLayout = getTrayPieceLayout(i, piece.matrix);
     drawPiece(piece.matrix, pieceLayout.x, pieceLayout.y, pieceLayout.cellSize, piece.color);
   }
 }
 
+function drawDragReturn() {
+  if (!dragReturnAnim || !layout) return;
+
+  const a = dragReturnAnim;
+  const t = easeOutCubic(Math.min(1, (performance.now() - a.start) / a.duration));
+  const x = lerp(a.fromX, a.toX, t);
+  const y = lerp(a.fromY, a.toY, t);
+  const cell = lerp(a.fromCell, a.toCell, t);
+  const scale = lerp(PICKUP_SCALE_BOOST, 1, t);
+
+  drawPieceScaled(a.matrix, x, y, cell, a.color, scale, 1);
+}
+
 function drawDraggedPiece() {
   if (!drag) return;
 
+  const now = performance.now();
   const origin = getDragVisualOrigin(drag.pointerX, drag.pointerY);
-  drawPiece(
+  const scale = getDragPickupScale(now);
+
+  drawPieceScaled(
     drag.piece.matrix,
     origin.x,
     origin.y,
     layout.cellSize,
     drag.piece.color,
-    0.95
+    scale,
+    1
   );
 }
 
@@ -1587,6 +1652,7 @@ function draw() {
   drawClearParticles();
   drawTray();
   drawTrayPieces();
+  drawDragReturn();
   drawDraggedPiece();
   drawFloatingTexts();
 }
@@ -1653,3 +1719,4 @@ setupInput();
 setupMusicPlayer();
 restartGame();
 resizeCanvas();
+startGameLoop();
