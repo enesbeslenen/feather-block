@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Feather Block</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="youtube-player-host" class="youtube-player-host" aria-hidden="true"></div>
+
+  <div id="game-container">
+    <div id="music-widget" class="music-widget">
+      <button
+        id="music-toggle"
+        type="button"
+        class="music-toggle"
+        aria-label="Müzik paneli"
+        aria-expanded="false"
+        aria-controls="music-panel"
+      >
+        🎵
+      </button>
+      <div id="music-panel" class="music-panel" hidden>
+        <div id="music-track-wrap" class="music-track-wrap" title="">
+          <div class="music-track-marquee">
+            <span id="music-track-title" class="music-track-title">Parça yükleniyor…</span>
+          </div>
+        </div>
+        <div class="music-controls">
+          <button id="music-prev" type="button" class="music-ctrl" aria-label="Önceki parça">⏮</button>
+          <button id="music-play-pause" type="button" class="music-ctrl music-ctrl-main" aria-label="Oynat">⏯</button>
+          <button id="music-next" type="button" class="music-ctrl" aria-label="Sonraki parça">⏭</button>
+        </div>
+        <button
+          id="music-shuffle"
+          type="button"
+          class="music-shuffle-btn"
+          aria-label="Karışık çal"
+          aria-pressed="false"
+        >
+          🔀 Karışık
+        </button>
+      </div>
+    </div>
+
+    <header id="hud">
+      <div class="hud-top">
+        <div class="high-score-row">
+          <span class="crown-icon" aria-hidden="true">👑</span>
+          <span id="high-score" class="high-score-value">0</span>
+        </div>
+      </div>
+      <div class="current-score-wrap">
+        <span id="current-score" class="current-score-value">0</span>
+      </div>
+    </header>
+    <div id="canvas-wrap">
+      <canvas id="game-canvas"></canvas>
+      <div id="game-over-overlay" class="game-over-overlay" aria-hidden="true">
+        <div class="game-over-panel">
+          <h2 class="game-over-title">OYUN BİTTİ</h2>
+          <div class="game-over-scores">
+            <div class="go-score-row">
+              <span class="go-label">Skor</span>
+              <span id="go-final-score" class="go-value">0</span>
+            </div>
+            <div class="go-score-row">
+              <span class="go-label">En Yüksek Skor</span>
+              <span id="go-high-score" class="go-value go-high">0</span>
+            </div>
+          </div>
+          <button id="restart-btn" type="button" class="restart-btn">Tekrar Oyna</button>
+        </div>
+      </div>
+    </div>
+    <footer id="game-footer" class="game-footer">
+      <a
+        class="brand-logo-link"
+        href="https://enesbeslenen.vercel.app"
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Enes Beslenen portfolyo (yeni sekme)"
+      >
+        <img src="assets/eb-logo.png" alt="EB" class="brand-logo" width="44" height="44" />
+      </a>
+    </footer>
+  </div>
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="script.js"></script>
+</body>
+</html>
