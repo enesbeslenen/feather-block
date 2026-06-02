@@ -15,8 +15,9 @@ const FLOAT_TEXT_DURATION_MS = 1000;
 const CLEAR_ANIM_MS = 380;
 const COMBO_VISUAL_MS = 900;
 
-const SCORE_PLACE_PER_CELL = 1;
-const SCORE_LINE_BASE = 10;
+/** Block Blast tarzı puanlama */
+const SCORE_PER_CELL = 10;
+const SCORE_LINE_UNIT = 100;
 
 const PIECE_COLORS = [
   "#ff6b6b",
@@ -161,6 +162,8 @@ let animLoopActive = false;
 let currentScore = 0;
 let highScore = 0;
 let isGameOver = false;
+/** Ardışık satır patlatma hamlesi (patlamayan hamlede sıfırlanır) */
+let comboStreak = 0;
 
 let ytPlayer = null;
 let ytPlayerReady = false;
@@ -708,13 +711,13 @@ function spawnClearParticles(cells) {
   }
 }
 
-function startComboVisual(lineCount) {
-  if (lineCount < 2 || !layout) return;
+function startComboVisual(streak) {
+  if (streak < 2 || !layout) return;
 
   comboVisual = {
     start: performance.now(),
     duration: COMBO_VISUAL_MS,
-    lineCount,
+    streak,
     boardCenter: {
       x: layout.board.x + layout.board.size / 2,
       y: layout.board.y + layout.board.size / 2,
@@ -737,30 +740,44 @@ function updateLineClearEffect() {
 
   const elapsed = performance.now() - lineClearEffect.start;
   if (elapsed >= lineClearEffect.duration) {
-    const { fullRows, fullCols, dropX, dropY, totalLines } = lineClearEffect;
-    applyLineClearToGrid(fullRows, fullCols);
-    finishLineClearScoring(dropX, dropY, totalLines);
     lineClearEffect = null;
     return true;
   }
   return false;
 }
 
-function finishLineClearScoring(dropX, dropY, comboCount) {
-  const linePoints = SCORE_LINE_BASE * comboCount * comboCount;
-  addScore(linePoints);
-
-  if (comboCount > 1) {
-    spawnFloatingText(dropX, dropY - 8, `Combo x${comboCount}!`, COLORS.floatCombo);
-    spawnFloatingText(dropX, dropY + 14, `+${linePoints}`, COLORS.floatPoints);
-  } else {
-    spawnFloatingText(dropX, dropY, `+${linePoints}`, COLORS.floatPoints);
-  }
+/** 1→100, 2→300, 3→600, 4→1000 … (n*(n+1)/2 * 100) */
+function getLineClearBaseScore(lineCount) {
+  if (lineCount <= 0) return 0;
+  return Math.floor((lineCount * (lineCount + 1)) / 2) * SCORE_LINE_UNIT;
 }
 
-function isCellClearing(row, col) {
-  if (!lineClearEffect) return false;
-  return lineClearEffect.cellKeys.has(`${row},${col}`);
+function scorePlacement(cells, dropX, dropY) {
+  if (cells <= 0) return;
+  const points = cells * SCORE_PER_CELL;
+  addScore(points);
+  spawnFloatingText(dropX, dropY, `+${points}`, COLORS.floatPoints);
+}
+
+function scoreLineClear(lineCount, dropX, dropY) {
+  if (lineCount <= 0) {
+    comboStreak = 0;
+    return;
+  }
+
+  comboStreak += 1;
+  const baseClear = getLineClearBaseScore(lineCount);
+  const points = baseClear * comboStreak;
+  addScore(points);
+
+  if (comboStreak > 1) {
+    spawnFloatingText(dropX, dropY - 10, `Combo x${comboStreak}!`, COLORS.floatCombo);
+    spawnFloatingText(dropX, dropY + 12, `+${points}`, COLORS.floatPoints);
+    startComboVisual(comboStreak);
+  } else {
+    spawnFloatingText(dropX, dropY, `+${points}`, COLORS.floatPoints);
+    if (lineCount >= 2) startComboVisual(2);
+  }
 }
 
 function needsAnimationLoop() {
@@ -850,28 +867,30 @@ function drawFloatingTexts() {
   }
 }
 
+/**
+ * Satır/sütun temizliği: önce tahtayı güncelle ve puanla, sonra sadece VFX.
+ * Oyun sonu kontrolü bu işlemden sonra yapılmalıdır.
+ */
 function resolveLineClearsAndScore(dropX, dropY) {
   const { fullRows, fullCols } = findCompletedLines();
   const totalLines = fullRows.length + fullCols.length;
-  if (totalLines === 0) return;
 
-  const cells = collectCellsToClear(fullRows, fullCols);
-  spawnClearParticles(cells);
-
-  if (totalLines >= 2) {
-    startComboVisual(totalLines);
+  if (totalLines === 0) {
+    comboStreak = 0;
+    return;
   }
 
-  const cellKeys = new Set(cells.map((c) => `${c.row},${c.col}`));
+  const cells = collectCellsToClear(fullRows, fullCols);
+  applyLineClearToGrid(fullRows, fullCols);
+  scoreLineClear(totalLines, dropX, dropY);
+  spawnClearParticles(cells);
+
   lineClearEffect = {
     start: performance.now(),
     duration: CLEAR_ANIM_MS,
-    fullRows,
-    fullCols,
-    cellKeys,
+    ghostCells: cells,
     dropX,
     dropY,
-    totalLines,
   };
 
   ensureAnimationLoop();
@@ -965,6 +984,7 @@ function restartGame() {
   hideGameOverOverlay();
   grid = createEmptyGrid();
   currentScore = 0;
+  comboStreak = 0;
   floatingTexts = [];
   clearParticles = [];
   lineClearEffect = null;
@@ -1200,9 +1220,6 @@ function drawPiece(matrix, originX, originY, cellSize, color, alpha = 1) {
 function drawPlacedBlocks() {
   const { x, y } = layout.board;
   const cellSize = layout.cellSize;
-  const clearT = lineClearEffect
-    ? Math.min(1, (performance.now() - lineClearEffect.start) / lineClearEffect.duration)
-    : 0;
 
   for (let row = 0; row < GRID_SIZE; row++) {
     for (let col = 0; col < GRID_SIZE; col++) {
@@ -1214,21 +1231,6 @@ function drawPlacedBlocks() {
       const py = y + row * cellSize;
       const inset = Math.max(1, cellSize * 0.06);
       const size = cellSize - inset * 2;
-      const cx = px + inset + size / 2;
-      const cy = py + inset + size / 2;
-
-      ctx.save();
-
-      if (isCellClearing(row, col)) {
-        const pop = 1 + Math.sin(clearT * Math.PI) * 0.22;
-        const alpha = 1 - clearT;
-        ctx.globalAlpha = alpha;
-        ctx.translate(cx, cy);
-        ctx.scale(pop, pop);
-        ctx.translate(-cx, -cy);
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 14 * (1 - clearT);
-      }
 
       ctx.fillStyle = color;
       roundRect(ctx, px + inset, py + inset, size, size, Math.max(2, cellSize * 0.12));
@@ -1237,8 +1239,43 @@ function drawPlacedBlocks() {
       ctx.strokeStyle = COLORS.cellFilledBorder;
       ctx.lineWidth = 1;
       ctx.stroke();
-      ctx.restore();
     }
+  }
+}
+
+function drawLineClearAnimation() {
+  if (!lineClearEffect || !layout) return;
+
+  const { x, y } = layout.board;
+  const cellSize = layout.cellSize;
+  const clearT = Math.min(
+    1,
+    (performance.now() - lineClearEffect.start) / lineClearEffect.duration
+  );
+
+  for (const cell of lineClearEffect.ghostCells) {
+    const px = x + cell.col * cellSize;
+    const py = y + cell.row * cellSize;
+    const inset = Math.max(1, cellSize * 0.06);
+    const size = cellSize - inset * 2;
+    const cx = px + inset + size / 2;
+    const cy = py + inset + size / 2;
+    const pop = 1 + Math.sin(clearT * Math.PI) * 0.22;
+
+    ctx.save();
+    ctx.globalAlpha = 1 - clearT;
+    ctx.translate(cx, cy);
+    ctx.scale(pop, pop);
+    ctx.translate(-cx, -cy);
+    ctx.shadowColor = cell.color;
+    ctx.shadowBlur = 14 * (1 - clearT);
+    ctx.fillStyle = cell.color;
+    roundRect(ctx, px + inset, py + inset, size, size, Math.max(2, cellSize * 0.12));
+    ctx.fill();
+    ctx.strokeStyle = COLORS.cellFilledBorder;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
   }
 }
 
@@ -1264,7 +1301,7 @@ function drawComboRings() {
   const { x: cx, y: cy } = comboVisual.boardCenter;
   const maxR = layout.board.size * 0.72;
 
-  for (let i = 0; i < comboVisual.lineCount + 1; i++) {
+  for (let i = 0; i < comboVisual.streak + 1; i++) {
     const phase = (t + i * 0.18) % 1;
     const radius = maxR * phase;
     const alpha = (1 - phase) * 0.55;
@@ -1373,7 +1410,7 @@ function tryPlaceDraggedPiece(px, py) {
   const dropCenter = getPlacementCenterCanvas(gridRow, gridCol, matrix);
 
   const placedCells = countFilledCells(matrix);
-  addScore(placedCells * SCORE_PLACE_PER_CELL);
+  scorePlacement(placedCells, dropCenter.x, dropCenter.y);
 
   resolveLineClearsAndScore(dropCenter.x, dropCenter.y);
 
@@ -1545,6 +1582,7 @@ function draw() {
   drawBackground();
   drawGrid(layout.board, layout.cellSize);
   drawPlacedBlocks();
+  drawLineClearAnimation();
   drawComboRings();
   drawClearParticles();
   drawTray();
