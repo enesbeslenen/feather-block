@@ -1538,19 +1538,42 @@ function drawTrayPieces() {
   }
 }
 
-function drawDraggedPieceSolidUnderlay(matrix, originX, originY, cellSize, color) {
+/** Sürüklenen parçanın altındaki yerleşik hücreleri ört (tam kare değil, ızgara stili) */
+function coverPlacedCellsUnderDrag(matrix, originX, originY, cellSize) {
+  const { board } = layout;
+  const gridCol = Math.round((originX - board.x) / cellSize);
+  const gridRow = Math.round((originY - board.y) / cellSize);
+  const inset = Math.max(1, cellSize * 0.06);
+
   ctx.globalAlpha = 1;
-  ctx.fillStyle = color;
 
   for (let row = 0; row < matrix.length; row++) {
     for (let col = 0; col < matrix[row].length; col++) {
       if (matrix[row][col] !== 1) continue;
-      ctx.fillRect(
-        originX + col * cellSize,
-        originY + row * cellSize,
-        cellSize,
-        cellSize
+
+      const gr = gridRow + row;
+      const gc = gridCol + col;
+      if (gr < 0 || gc < 0 || gr >= GRID_SIZE || gc >= GRID_SIZE) continue;
+      if (grid[gr][gc] === 0) continue;
+
+      const cx = board.x + gc * cellSize;
+      const cy = board.y + gr * cellSize;
+      const cellDrawSize = cellSize - inset * 2;
+
+      ctx.fillStyle = COLORS.cellEmpty;
+      roundRect(
+        ctx,
+        cx + inset,
+        cy + inset,
+        cellDrawSize,
+        cellDrawSize,
+        Math.max(2, cellSize * 0.12)
       );
+      ctx.fill();
+
+      ctx.strokeStyle = COLORS.cellBorder;
+      ctx.lineWidth = 1;
+      ctx.stroke();
     }
   }
 }
@@ -1562,7 +1585,7 @@ function drawDraggedPiece() {
   const { matrix, color } = drag.piece;
   const cellSize = layout.cellSize;
 
-  drawDraggedPieceSolidUnderlay(matrix, origin.x, origin.y, cellSize, color);
+  coverPlacedCellsUnderDrag(matrix, origin.x, origin.y, cellSize);
   drawPiece(matrix, origin.x, origin.y, cellSize, color, 1);
 }
 
