@@ -34,6 +34,8 @@ const PIECE_COLORS = [
 ];
 
 const TRAY_PIECE_SCALE = 0.55;
+/** Alttaki 3 tepsi parçası: hücre dışına görünmez dokunma payı (mobil) */
+const TRAY_TOUCH_PAD_RATIO = 0.2;
 /** Dokunmatikte parça parmağın üstünden kalkar (blok görünür kalır) */
 const DRAG_TOUCH_LIFT_RATIO = 1.35;
 /** Dokunmatik sürükleme yumuşatma (yüksek = daha hızlı takip) */
@@ -1088,7 +1090,9 @@ function getCanvasPoint(clientX, clientY) {
   };
 }
 
-function hitTestFilledCells(px, py, originX, originY, cellSize, matrix) {
+function hitTestFilledCells(px, py, originX, originY, cellSize, matrix, touchPadRatio = 0) {
+  const pad = cellSize * touchPadRatio;
+
   for (let row = 0; row < matrix.length; row++) {
     for (let col = 0; col < matrix[row].length; col++) {
       if (matrix[row][col] !== 1) continue;
@@ -1097,10 +1101,10 @@ function hitTestFilledCells(px, py, originX, originY, cellSize, matrix) {
       const cellY = originY + row * cellSize;
 
       if (
-        px >= cellX &&
-        px < cellX + cellSize &&
-        py >= cellY &&
-        py < cellY + cellSize
+        px >= cellX - pad &&
+        px < cellX + cellSize + pad &&
+        py >= cellY - pad &&
+        py < cellY + cellSize + pad
       ) {
         const relCol = (px - originX) / cellSize;
         const relRow = (py - originY) / cellSize;
@@ -1126,7 +1130,8 @@ function hitTestTrayPiece(px, py) {
       pieceLayout.x,
       pieceLayout.y,
       pieceLayout.cellSize,
-      piece.matrix
+      piece.matrix,
+      TRAY_TOUCH_PAD_RATIO
     );
 
     if (hit) {
@@ -1533,11 +1538,32 @@ function drawTrayPieces() {
   }
 }
 
+function drawDraggedPieceSolidUnderlay(matrix, originX, originY, cellSize, color) {
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = color;
+
+  for (let row = 0; row < matrix.length; row++) {
+    for (let col = 0; col < matrix[row].length; col++) {
+      if (matrix[row][col] !== 1) continue;
+      ctx.fillRect(
+        originX + col * cellSize,
+        originY + row * cellSize,
+        cellSize,
+        cellSize
+      );
+    }
+  }
+}
+
 function drawDraggedPiece() {
   if (!drag) return;
 
   const origin = getDragOriginFromPointer(drag.pointerX, drag.pointerY);
-  drawPiece(drag.piece.matrix, origin.x, origin.y, layout.cellSize, drag.piece.color, 0.95);
+  const { matrix, color } = drag.piece;
+  const cellSize = layout.cellSize;
+
+  drawDraggedPieceSolidUnderlay(matrix, origin.x, origin.y, cellSize, color);
+  drawPiece(matrix, origin.x, origin.y, cellSize, color, 1);
 }
 
 function roundRect(context, x, y, w, h, r) {
