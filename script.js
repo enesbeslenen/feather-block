@@ -34,6 +34,10 @@ const PIECE_COLORS = [
 ];
 
 const TRAY_PIECE_SCALE = 0.55;
+/** Dokunmatikte parça parmağın üstünden kalkar (blok görünür kalır) */
+const DRAG_TOUCH_LIFT_RATIO = 1.35;
+/** Dokunmatik sürükleme yumuşatma (yüksek = daha hızlı takip) */
+const DRAG_TOUCH_SMOOTHING = 0.9;
 
 /** Canvas içi dikey bölüm oranları (referans: ~55% tahta, ~20% tepsi) */
 const LAYOUT_TRAY_RATIO = 0.15;
@@ -145,6 +149,7 @@ let deviceRatio = 1;
 let grid = createEmptyGrid();
 let trayPieces = [null, null, null];
 let drag = null;
+let touchDragListenersBound = false;
 let floatingTexts = [];
 let clearParticles = [];
 let lineClearEffect = null;
@@ -761,7 +766,8 @@ function needsAnimationLoop() {
     floatingTexts.length > 0 ||
     clearParticles.length > 0 ||
     lineClearEffect !== null ||
-    comboVisual !== null
+    comboVisual !== null ||
+    (drag !== null && drag.useSmoothing)
   );
 }
 
@@ -1289,18 +1295,47 @@ function placeOnGrid(matrix, gridRow, gridCol, color) {
   }
 }
 
-function getDragOriginFromPointer(px, py) {
+function isCoarsePointer() {
+  return window.matchMedia("(pointer: coarse)").matches;
+}
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
+function getDragDesiredOrigin(px, py) {
   const cellSize = layout.cellSize;
+  const matrix = drag.piece.matrix;
+  const cols = matrix[0].length;
+  const rows = matrix.length;
+  const pieceW = cols * cellSize;
+  const pieceH = rows * cellSize;
+
   return {
-    x: px - drag.relCol * cellSize,
-    y: py - drag.relRow * cellSize,
+    x: px - drag.normX * pieceW,
+    y: py - drag.normY * pieceH - drag.liftY,
   };
+}
+
+/**
+ * Tutma noktası parça içinde normalize (0–1); tepsi/tahta ölçeği farkında sıçrama olmaz.
+ */
+function getDragOriginFromPointer(px, py) {
+  const desired = getDragDesiredOrigin(px, py);
+
+  if (!drag.useSmoothing) {
+    return desired;
+  }
+
+  drag.smoothX += (desired.x - drag.smoothX) * DRAG_TOUCH_SMOOTHING;
+  drag.smoothY += (desired.y - drag.smoothY) * DRAG_TOUCH_SMOOTHING;
+  return { x: drag.smoothX, y: drag.smoothY };
 }
 
 function tryPlaceDraggedPiece(px, py) {
   const { board, cellSize } = layout;
   const { matrix, color } = drag.piece;
-  const origin = getDragOriginFromPointer(px, py);
+  const origin = getDragDesiredOrigin(px, py);
 
   const gridCol = Math.round((origin.x - board.x) / cellSize);
   const gridRow = Math.round((origin.y - board.y) / cellSize);
@@ -1328,26 +1363,87 @@ function tryPlaceDraggedPiece(px, py) {
   return true;
 }
 
+function bindTouchDragListeners() {
+  if (touchDragListenersBound) return;
+  touchDragListenersBound = true;
+
+  window.addEventListener("touchmove", onWindowTouchMove, { passive: false });
+  window.addEventListener("touchend", onWindowTouchEnd, { passive: false });
+  window.addEventListener("touchcancel", onWindowTouchEnd, { passive: false });
+}
+
+function unbindTouchDragListeners() {
+  if (!touchDragListenersBound) return;
+  touchDragListenersBound = false;
+
+  window.removeEventListener("touchmove", onWindowTouchMove);
+  window.removeEventListener("touchend", onWindowTouchEnd);
+  window.removeEventListener("touchcancel", onWindowTouchEnd);
+}
+
+function onWindowTouchMove(e) {
+  if (!drag) return;
+  e.preventDefault();
+  if (e.touches.length === 0) return;
+  const t = e.touches[0];
+  onPointerMove(t.clientX, t.clientY);
+}
+
+function onWindowTouchEnd(e) {
+  const t = e.changedTouches[0];
+  if (t && drag) onPointerUp(t.clientX, t.clientY);
+  unbindTouchDragListeners();
+}
+
 function startDrag(px, py, hit) {
+  const boardCell = layout.cellSize;
+  const matrix = hit.piece.matrix;
+  const trayLayout = getTrayPieceLayout(hit.slotIndex, matrix);
+  const cols = matrix[0].length;
+  const rows = matrix.length;
+  const pieceWTray = cols * trayLayout.cellSize;
+  const pieceHTray = rows * trayLayout.cellSize;
+  const pieceWBoard = cols * boardCell;
+  const pieceHBoard = rows * boardCell;
+
+  const normX = clamp01((px - trayLayout.x) / pieceWTray);
+  const normY = clamp01((py - trayLayout.y) / pieceHTray);
+  const useSmoothing = isCoarsePointer();
+  const liftY = useSmoothing ? boardCell * DRAG_TOUCH_LIFT_RATIO : 0;
+
+  const originX = px - normX * pieceWBoard;
+  const originY = py - normY * pieceHBoard - liftY;
+
   drag = {
     piece: hit.piece,
     slotIndex: hit.slotIndex,
-    relCol: hit.relCol,
-    relRow: hit.relRow,
-    x: px,
-    y: py,
+    normX,
+    normY,
+    liftY,
+    useSmoothing,
+    pointerX: px,
+    pointerY: py,
+    smoothX: originX,
+    smoothY: originY,
   };
+
+  if (useSmoothing) {
+    bindTouchDragListeners();
+    ensureAnimationLoop();
+  }
 }
 
 function updateDrag(px, py) {
   if (!drag) return;
-  drag.x = px;
-  drag.y = py;
+  drag.pointerX = px;
+  drag.pointerY = py;
+  getDragOriginFromPointer(px, py);
   draw();
 }
 
 function endDrag(px, py) {
   if (!drag) return;
+  unbindTouchDragListeners();
   tryPlaceDraggedPiece(px, py);
   drag = null;
   draw();
@@ -1440,7 +1536,7 @@ function drawTrayPieces() {
 function drawDraggedPiece() {
   if (!drag) return;
 
-  const origin = getDragOriginFromPointer(drag.x, drag.y);
+  const origin = getDragOriginFromPointer(drag.pointerX, drag.pointerY);
   drawPiece(drag.piece.matrix, origin.x, origin.y, layout.cellSize, drag.piece.color, 0.95);
 }
 
@@ -1506,6 +1602,7 @@ function setupInput() {
   canvas.addEventListener(
     "touchmove",
     (e) => {
+      if (!drag) return;
       e.preventDefault();
       if (e.touches.length === 0) return;
       const t = e.touches[0];
@@ -1527,6 +1624,7 @@ function setupInput() {
   canvas.addEventListener("touchcancel", (e) => {
     const t = e.changedTouches[0];
     if (t) onPointerUp(t.clientX, t.clientY);
+    unbindTouchDragListeners();
   });
 
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
