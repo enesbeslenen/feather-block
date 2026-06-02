@@ -60,6 +60,27 @@ const COLORS = {
   trayBorder: "transparent",
   floatCombo: "#ffe66d",
   floatPoints: "#4ecdc4",
+  ghostFill: "rgba(255,255,255,0.22)",
+  linePreviewGlow: "rgba(255,255,255,0.2)",
+};
+
+/** Akıllı spawn: büyük/zor şekiller */
+const HEAVY_SHAPES = new Set(["square3", "lLarge", "rect3x2"]);
+const RESCUE_SHAPES = new Set(["single", "line2", "line3", "square2"]);
+
+/** Temel şekil spawn ağırlıkları (yüksek = daha sık) */
+const SPAWN_BASE_WEIGHT = {
+  single: 14,
+  line2: 12,
+  line3: 10,
+  square2: 10,
+  lSmall: 8,
+  tShape: 5,
+  zShape: 5,
+  sShape: 5,
+  lLarge: 3,
+  rect3x2: 2,
+  square3: 2,
 };
 
 /** Temel şekiller — tüm döndürülmüş varyasyonlar buildShapePool ile üretilir */
@@ -568,31 +589,101 @@ function pickSpawnTier() {
   return SPAWN_TIERS[0];
 }
 
-function pickBaseFromTier(tier, avoidBases) {
-  const fresh = tier.shapes.filter((name) => !avoidBases.has(name));
-  const pool = fresh.length > 0 ? fresh : tier.shapes;
+function pickBaseFromTier(tier, avoidBases, heavyInSet = 0) {
+  let pool = tier.shapes.filter((name) => !avoidBases.has(name));
+  if (pool.length === 0) pool = tier.shapes.slice();
+
+  if (heavyInSet >= 1) {
+    const filtered = pool.filter((name) => !HEAVY_SHAPES.has(name));
+    if (filtered.length > 0) pool = filtered;
+  }
+
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+function getSpawnWeightForBase(baseName, heavyInSet = 0) {
+  let w = SPAWN_BASE_WEIGHT[baseName] ?? 5;
+  if (RESCUE_SHAPES.has(baseName)) w += 4;
+  if (HEAVY_SHAPES.has(baseName)) {
+    w = heavyInSet >= 1 ? 0 : Math.max(1, w - 2);
+  }
+  return w;
+}
+
+function pickWeightedCandidate(candidates) {
+  const total = candidates.reduce((sum, c) => sum + c.weight, 0);
+  let roll = Math.random() * total;
+  for (const c of candidates) {
+    roll -= c.weight;
+    if (roll <= 0) return c;
+  }
+  return candidates[candidates.length - 1];
+}
+
+function buildFittingCandidates(avoidBases) {
+  const list = [];
+
+  for (const baseName of BASE_SHAPE_NAMES) {
+    if (avoidBases.has(baseName)) continue;
+
+    for (const matrix of SHAPE_VARIANTS[baseName]) {
+      if (!canPieceFitOnBoard(matrix)) continue;
+      list.push({
+        shapeKey: baseName,
+        matrix: cloneMatrix(matrix),
+        weight: getSpawnWeightForBase(baseName, 0),
+      });
+    }
+  }
+
+  return list;
+}
+
+function createPieceFromCandidate(candidate) {
+  return {
+    shapeKey: candidate.shapeKey,
+    matrix: candidate.matrix,
+    color: randomPieceColor(),
+  };
+}
+
+function pickGuaranteedFittingPiece(avoidBases) {
+  const fitting = buildFittingCandidates(avoidBases);
+  if (fitting.length === 0) {
+    return createSmartTrayPiece(avoidBases, 0);
+  }
+
+  const rescue = fitting.filter((c) => RESCUE_SHAPES.has(c.shapeKey));
+  const pool = rescue.length > 0 ? rescue : fitting;
+  return createPieceFromCandidate(pickWeightedCandidate(pool));
+}
+
 /**
- * Önce zorluk katmanı (10:5:3), sonra temel şekil + rastgele dönüş.
- * Aynı 3'lü sette mümkünse tekrarlayan temel şekil verilmez.
+ * Adil spawn: ağırlıklı şekil + sette en fazla bir ağır blok eğilimi.
  */
-function createRandomTrayPiece(avoidBases = new Set()) {
+function createSmartTrayPiece(avoidBases = new Set(), heavyInSet = 0) {
   let baseName = null;
 
-  for (let attempt = 0; attempt < 24; attempt++) {
+  for (let attempt = 0; attempt < 28; attempt++) {
     const tier = pickSpawnTier();
-    const candidate = pickBaseFromTier(tier, avoidBases);
-    if (!avoidBases.has(candidate)) {
+    const candidate = pickBaseFromTier(tier, avoidBases, heavyInSet);
+    if (!avoidBases.has(candidate) && !(heavyInSet >= 1 && HEAVY_SHAPES.has(candidate))) {
       baseName = candidate;
       break;
     }
-    baseName = candidate;
+    if (!HEAVY_SHAPES.has(candidate) || heavyInSet === 0) {
+      baseName = candidate;
+    }
   }
 
   if (!baseName) {
-    baseName = BASE_SHAPE_NAMES[Math.floor(Math.random() * BASE_SHAPE_NAMES.length)];
+    const pool = BASE_SHAPE_NAMES.filter(
+      (n) => !avoidBases.has(n) && (heavyInSet === 0 || !HEAVY_SHAPES.has(n))
+    );
+    baseName =
+      pool.length > 0
+        ? pool[Math.floor(Math.random() * pool.length)]
+        : BASE_SHAPE_NAMES[Math.floor(Math.random() * BASE_SHAPE_NAMES.length)];
   }
 
   const rotations = SHAPE_VARIANTS[baseName];
@@ -603,6 +694,10 @@ function createRandomTrayPiece(avoidBases = new Set()) {
     matrix,
     color: randomPieceColor(),
   };
+}
+
+function countHeavyInPieces(pieces) {
+  return pieces.filter((p) => p && HEAVY_SHAPES.has(p.shapeKey)).length;
 }
 
 function createEmptyGrid() {
@@ -619,12 +714,12 @@ function countFilledCells(matrix) {
   return count;
 }
 
-function findCompletedLines() {
+function findCompletedLinesOnGrid(boardGrid) {
   const fullRows = [];
   const fullCols = [];
 
   for (let row = 0; row < GRID_SIZE; row++) {
-    if (grid[row].every((cell) => cell !== 0)) {
+    if (boardGrid[row].every((cell) => cell !== 0)) {
       fullRows.push(row);
     }
   }
@@ -632,7 +727,7 @@ function findCompletedLines() {
   for (let col = 0; col < GRID_SIZE; col++) {
     let isFull = true;
     for (let row = 0; row < GRID_SIZE; row++) {
-      if (grid[row][col] === 0) {
+      if (boardGrid[row][col] === 0) {
         isFull = false;
         break;
       }
@@ -641,6 +736,25 @@ function findCompletedLines() {
   }
 
   return { fullRows, fullCols };
+}
+
+function findCompletedLines() {
+  return findCompletedLinesOnGrid(grid);
+}
+
+function cloneBoardGrid(sourceGrid = grid) {
+  return sourceGrid.map((row) => row.slice());
+}
+
+function simulatePlacementLines(matrix, gridRow, gridCol) {
+  const temp = cloneBoardGrid();
+  for (let r = 0; r < matrix.length; r++) {
+    for (let c = 0; c < matrix[r].length; c++) {
+      if (matrix[r][c] !== 1) continue;
+      temp[gridRow + r][gridCol + c] = 1;
+    }
+  }
+  return findCompletedLinesOnGrid(temp);
 }
 
 function applyLineClearToGrid(fullRows, fullCols) {
@@ -992,12 +1106,22 @@ function randomPieceColor() {
 
 function spawnTraySet() {
   const usedBases = new Set();
+  const spawned = [];
+
+  const guaranteed = pickGuaranteedFittingPiece(usedBases);
+  usedBases.add(guaranteed.shapeKey);
+  spawned.push(guaranteed);
+
+  for (let i = 1; i < TRAY_SLOT_COUNT; i++) {
+    const heavyCount = countHeavyInPieces(spawned);
+    const piece = createSmartTrayPiece(usedBases, heavyCount);
+    usedBases.add(piece.shapeKey);
+    spawned.push(piece);
+  }
 
   for (let i = 0; i < TRAY_SLOT_COUNT; i++) {
-    const piece = createRandomTrayPiece(usedBases);
-    usedBases.add(piece.shapeKey);
     trayPieces[i] = {
-      ...piece,
+      ...spawned[i],
       slotIndex: i,
     };
   }
@@ -1390,6 +1514,37 @@ function getDragLiftY(cellSize, useLift) {
 /**
  * Bloğun ekrandaki gerçek (offsetli) sol-üst köşesi — çizim ve snap buradan.
  */
+function darkenColor(hex, factor = 0.55) {
+  const raw = hex.replace("#", "");
+  if (raw.length !== 6) return hex;
+  const r = Math.floor(parseInt(raw.slice(0, 2), 16) * factor);
+  const g = Math.floor(parseInt(raw.slice(2, 4), 16) * factor);
+  const b = Math.floor(parseInt(raw.slice(4, 6), 16) * factor);
+  return `rgb(${r},${g},${b})`;
+}
+
+function getDragPlacementPreview() {
+  if (!drag || !layout) return null;
+
+  const { board, cellSize } = layout;
+  const matrix = drag.piece.matrix;
+  const origin = getDragVisualOrigin(drag.pointerX, drag.pointerY);
+  const gridCol = Math.round((origin.x - board.x) / cellSize);
+  const gridRow = Math.round((origin.y - board.y) / cellSize);
+
+  if (!canPlace(matrix, gridRow, gridCol)) return null;
+
+  const { fullRows, fullCols } = simulatePlacementLines(matrix, gridRow, gridCol);
+  return {
+    gridRow,
+    gridCol,
+    matrix,
+    color: drag.piece.color,
+    fullRows,
+    fullCols,
+  };
+}
+
 function getDragVisualOrigin(px, py) {
   const cellSize = layout.cellSize;
   const matrix = drag.piece.matrix;
@@ -1556,6 +1711,55 @@ function resizeCanvas() {
   draw();
 }
 
+function drawLineClearPreview(preview) {
+  if (!preview || !layout) return;
+  const { fullRows, fullCols } = preview;
+  if (fullRows.length === 0 && fullCols.length === 0) return;
+
+  const { board, cellSize } = layout;
+  const { x, y } = board;
+
+  ctx.save();
+  ctx.fillStyle = COLORS.linePreviewGlow;
+  ctx.shadowColor = "rgba(255,255,255,0.45)";
+  ctx.shadowBlur = Math.max(6, cellSize * 0.35);
+
+  for (const row of fullRows) {
+    ctx.fillRect(x, y + row * cellSize, board.size, cellSize);
+  }
+  for (const col of fullCols) {
+    ctx.fillRect(x + col * cellSize, y, cellSize, board.size);
+  }
+
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.lineWidth = Math.max(1.5, cellSize * 0.06);
+
+  for (const row of fullRows) {
+    ctx.strokeRect(x + 1, y + row * cellSize + 1, board.size - 2, cellSize - 2);
+  }
+  for (const col of fullCols) {
+    ctx.strokeRect(x + col * cellSize + 1, y + 1, cellSize - 2, board.size - 2);
+  }
+
+  ctx.restore();
+}
+
+function drawGhostPreview(preview) {
+  if (!preview || !layout) return;
+
+  const { board, cellSize } = layout;
+  const originX = board.x + preview.gridCol * cellSize;
+  const originY = board.y + preview.gridRow * cellSize;
+  const ghostColor = darkenColor(preview.color, 0.5);
+
+  ctx.save();
+  ctx.globalAlpha = 0.4;
+  drawPiece(preview.matrix, originX, originY, cellSize, ghostColor, 1);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 function drawGrid(board, cellSize) {
   const { x, y, cols, rows, size } = board;
 
@@ -1646,7 +1850,11 @@ function draw() {
 
   drawBackground();
   drawGrid(layout.board, layout.cellSize);
+
+  const dragPreview = drag ? getDragPlacementPreview() : null;
+  drawLineClearPreview(dragPreview);
   drawPlacedBlocks();
+  drawGhostPreview(dragPreview);
   drawLineClearAnimation();
   drawComboRings();
   drawClearParticles();
