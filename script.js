@@ -1538,55 +1538,18 @@ function drawTrayPieces() {
   }
 }
 
-/** Sürüklenen parçanın altındaki yerleşik hücreleri ört (tam kare değil, ızgara stili) */
-function coverPlacedCellsUnderDrag(matrix, originX, originY, cellSize) {
-  const { board } = layout;
-  const gridCol = Math.round((originX - board.x) / cellSize);
-  const gridRow = Math.round((originY - board.y) / cellSize);
-  const inset = Math.max(1, cellSize * 0.06);
-
-  ctx.globalAlpha = 1;
-
-  for (let row = 0; row < matrix.length; row++) {
-    for (let col = 0; col < matrix[row].length; col++) {
-      if (matrix[row][col] !== 1) continue;
-
-      const gr = gridRow + row;
-      const gc = gridCol + col;
-      if (gr < 0 || gc < 0 || gr >= GRID_SIZE || gc >= GRID_SIZE) continue;
-      if (grid[gr][gc] === 0) continue;
-
-      const cx = board.x + gc * cellSize;
-      const cy = board.y + gr * cellSize;
-      const cellDrawSize = cellSize - inset * 2;
-
-      ctx.fillStyle = COLORS.cellEmpty;
-      roundRect(
-        ctx,
-        cx + inset,
-        cy + inset,
-        cellDrawSize,
-        cellDrawSize,
-        Math.max(2, cellSize * 0.12)
-      );
-      ctx.fill();
-
-      ctx.strokeStyle = COLORS.cellBorder;
-      ctx.lineWidth = 1;
-      ctx.stroke();
-    }
-  }
-}
-
 function drawDraggedPiece() {
   if (!drag) return;
 
   const origin = getDragOriginFromPointer(drag.pointerX, drag.pointerY);
-  const { matrix, color } = drag.piece;
-  const cellSize = layout.cellSize;
-
-  coverPlacedCellsUnderDrag(matrix, origin.x, origin.y, cellSize);
-  drawPiece(matrix, origin.x, origin.y, cellSize, color, 1);
+  drawPiece(
+    drag.piece.matrix,
+    origin.x,
+    origin.y,
+    layout.cellSize,
+    drag.piece.color,
+    0.95
+  );
 }
 
 function roundRect(context, x, y, w, h, r) {
